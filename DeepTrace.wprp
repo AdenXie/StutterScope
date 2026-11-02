@@ -1,0 +1,55 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Selected providers/keywords follow the Windows 11 built-in CPU, GPU,
+     DesktopComposition, DiskIO and FileIO profiles. No heap/registry/network dump.
+     192 MiB kernel + 64 MiB graphics = 256 MiB configured circular buffers. -->
+<WindowsPerformanceRecorder Version="1.0" Author="StutterScope">
+  <Profiles>
+    <SystemCollector Id="Kernel" Name="StutterScope Kernel">
+      <BufferSize Value="1024"/><Buffers Value="192"/>
+    </SystemCollector>
+    <EventCollector Id="Graphics" Name="StutterScope Graphics">
+      <BufferSize Value="1024"/><Buffers Value="64"/>
+    </EventCollector>
+    <SystemProvider Id="System">
+      <Keywords>
+        <Keyword Value="CpuConfig"/><Keyword Value="ProcessThread"/><Keyword Value="Loader"/>
+        <Keyword Value="CSwitch"/><Keyword Value="ReadyThread"/><Keyword Value="ThreadPriority"/>
+        <Keyword Value="SampledProfile"/><Keyword Value="DPC"/><Keyword Value="Interrupt"/>
+        <Keyword Value="DiskIO"/><Keyword Value="DiskIOInit"/><Keyword Value="FileIO"/>
+        <Keyword Value="FileIOInit"/><Keyword Value="HardFaults"/><Keyword Value="MemoryInfo"/>
+        <Keyword Value="Power"/><Keyword Value="WDFDPC"/><Keyword Value="WDFInterrupt"/>
+      </Keywords>
+      <Stacks>
+        <Stack Value="CSwitch"/><Stack Value="ReadyThread"/><Stack Value="SampledProfile"/>
+        <Stack Value="PagefaultHard"/><Stack Value="DiskReadInit"/><Stack Value="DiskWriteInit"/>
+      </Stacks>
+    </SystemProvider>
+    <EventProvider Id="DxgKrnl" Name="802ec45a-1e99-4b83-9920-87c98277ba9d" Level="5" NonPagedMemory="true" Stack="true" Strict="true">
+      <Keywords><Keyword Value="0x277"/></Keywords>
+      <CaptureStateOnStart Timeout="5"><Keyword Value="0x277"/></CaptureStateOnStart>
+    </EventProvider>
+    <EventProvider Id="Dwm" Name="9e9bba3c-2e38-40cb-99f4-9e8281425164" Level="6" NonPagedMemory="true" Strict="true">
+      <Keywords><Keyword Value="0x1ffff"/></Keywords>
+    </EventProvider>
+    <EventProvider Id="DirectComposition" Name="c44219d0-f344-11df-a5e2-b307dfd72085" NonPagedMemory="true">
+      <Keywords><Keyword Value="0x4"/></Keywords>
+    </EventProvider>
+    <EventProvider Id="Win32k" Name="8c416c79-d49b-4f01-a467-e56d3aa8234c" NonPagedMemory="true" Stack="true">
+      <Keywords><Keyword Value="0x46e3000"/></Keywords>
+      <CaptureStateOnSave Timeout="5"><Keyword Value="0x80000"/></CaptureStateOnSave>
+    </EventProvider>
+    <EventProvider Id="WprControl" Name="36b6f488-aad7-48c2-afe3-d4ec2c8b46fa" NonPagedMemory="true">
+      <Keywords><Keyword Value="0x10000"/></Keywords>
+    </EventProvider>
+    <Profile Id="StutterScope.Verbose.Memory" Name="StutterScope" Description="Bounded CPU waits, DPC/ISR, graphics and I/O diagnosis" LoggingMode="Memory" DetailLevel="Verbose">
+      <Collectors>
+        <SystemCollectorId Value="Kernel"><SystemProviderId Value="System"/></SystemCollectorId>
+        <EventCollectorId Value="Graphics"><EventProviders>
+          <EventProviderId Value="DxgKrnl"/><EventProviderId Value="Dwm"/>
+          <EventProviderId Value="DirectComposition"/><EventProviderId Value="Win32k"/>
+          <EventProviderId Value="WprControl"/>
+        </EventProviders></EventCollectorId>
+      </Collectors>
+    </Profile>
+  </Profiles>
+</WindowsPerformanceRecorder>

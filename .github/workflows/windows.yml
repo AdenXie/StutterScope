@@ -1,0 +1,35 @@
+name: Windows build and portable package
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  build:
+    runs-on: windows-latest
+    timeout-minutes: 15
+    defaults:
+      run:
+        shell: pwsh
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - name: Fetch pinned PresentMon
+        run: ./tools/fetch-presentmon.ps1
+      - name: Build
+        run: ./build.ps1
+      - name: Deterministic tests and report syntax
+        run: ./tests/smoke.ps1 -Quick
+      - name: Validate WPR profile without starting capture
+        run: |
+          wpr -profiledetails "$pwd/DeepTrace.wprp!StutterScope"
+          if ($LASTEXITCODE -ne 0) { throw 'Invalid WPR profile' }
+      - name: Package portable release
+        run: ./Create-Release.ps1
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
+        with:
+          name: StutterScope-win-x64
+          path: |
+            dist/*.zip
+            dist/*.zip.sha256
+          if-no-files-found: error
