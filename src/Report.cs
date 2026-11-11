@@ -241,11 +241,26 @@ namespace StutterScope
         static void Findings(ReportData data)
         {
             var game = Primary(data);
-            if (game == null) return;
-            var samples = data.samples.Where(s => s.foregroundPid == game.pid).ToList();
+            // Without frame data the system telemetry still says a lot: fall back to whatever held the foreground longest.
+            var front = data.samples.Where(s => s.foregroundPid != 0 && !Shell.Any(n => n.StartsWith((s.foreground ?? "") + ".", StringComparison.OrdinalIgnoreCase)))
+                .GroupBy(s => s.foregroundPid).OrderByDescending(g => g.Count()).FirstOrDefault();
+            int pid = game != null ? game.pid : front != null ? front.Key : 0;
+            string appName = game != null ? (game.application.EndsWith(".exe", StringComparison.OrdinalIgnoreCase) ? game.application.Substring(0, game.application.Length - 4) : game.application) : front != null ? front.First().foreground : null;
+            if (pid == 0 || (game == null && data.samples.Count < 20)) return;
+            var samples = data.samples.Where(s => s.foregroundPid == pid).ToList();
             if (samples.Count < 20) samples = data.samples;
+            if (game == null)
+            {
+                string status = Convert.ToString(data.meta.ContainsKey("frameStatus") ? data.meta["frameStatus"] : "", CultureInfo.InvariantCulture);
+                bool denied = status.Contains("代码 6") || (data.deep != null && data.deep.error != null && data.deep.error.IndexOf("denied", StringComparison.OrdinalIgnoreCase) >= 0);
+                Add(data, "warn", "没有逐帧数据：无法统计卡顿次数，以下只是 " + appName + " 在前台期间的系统状况",
+                    denied ? "建立 ETW 跟踪会话被系统拒绝（记录器已有管理员权限）。带内核反作弊的游戏已经在运行时常见这种情况：请先启动记录器，等窗口显示正常后再启动游戏。"
+                           : "逐帧状态：" + status + "。");
+            }
             double minutes = samples.Sum(s => s.intervalMs) / 60000;
-            var stutters = Stutters(game);
+            var stutters = game == null ? new List<Incident>() : Stutters(game);
+            if (game != null)
+            {
             if (stutters.Count == 0) Add(data, "good", game.application + "：前台没有检测到明显卡顿", "判定标准：应用在前台、帧间隔 ≥ max(30 ms, 4×近期基线)。更小的抖动仍列在候选表中。");
             else
             {
@@ -277,6 +292,13 @@ namespace StutterScope
                     Add(data, "warn", "事件级跟踪 " + Stamp(stall.t) + "（" + N(stall.frameMs) + " ms 长帧，" + trace.file + "）", String.Join("\n", stall.conclusions));
             int self = game.selfInduced;
             if (self > 0) Add(data, "info", self + " 个候选长帧发生在事件级跟踪启动或保存期间", "它们是监控自身造成的，已标为“监控自身干扰”，不计入上面的卡顿统计，默认也不显示在候选表里。");
+            }
+            var disk = samples.Select(s => Math.Max(s.diskReadMs ?? 0, s.diskWriteMs ?? 0)).ToList();
+            int slowDisk = disk.Count(v => v >= 30);
+            if (slowDisk >= Math.Max(5, disk.Count * .03))
+                Add(data, "warn", "磁盘响应反复变慢：" + N(slowDisk * 100.0 / disk.Count) + "% 的采样里读写响应 ≥ 30 ms，最长 " + N(disk.Max()) + " ms",
+                    "最慢的盘：" + (samples.Where(s => Math.Max(s.diskReadMs ?? 0, s.diskWriteMs ?? 0) >= 30).GroupBy(s => s.diskWorst).OrderByDescending(g => g.Count()).First().Key ?? "未知")
+                    + "。固态盘正常在 1 ms 以内。游戏在这些时刻读取资源或发生缺页就会卡住。常见原因：盘几乎写满、内存不足导致频繁换页、盘本身降速或过热。");
 
             var perf = samples.Where(s => s.cpuPerformance.HasValue).Select(s => s.cpuPerformance.Value).ToList();
             var core = samples.Where(s => s.coreMax.HasValue).Select(s => s.coreMax.Value).ToList();
@@ -297,13 +319,13 @@ namespace StutterScope
                 Add(data, "warn", "内存紧张：提交量中位 " + N(Quantile(commit, .5)) + "%，可用内存低位 " + N(Quantile(available, .05)) + " MB",
                     "页面读入 P90 " + N(Quantile(pages, .9)) + " 页/秒。内存不足时系统会压缩和换出页面，游戏或被它等待的后台进程再次用到这些页面就要等磁盘。关闭占内存的后台程序（浏览器、聊天/AI 客户端等）。");
             }
-            if (game.presentMode != null && game.presentMode.IndexOf("Composed: Copy", StringComparison.OrdinalIgnoreCase) >= 0)
+            if (game != null && game.presentMode != null && game.presentMode.IndexOf("Composed: Copy", StringComparison.OrdinalIgnoreCase) >= 0)
                 Add(data, "info", "游戏以窗口化“复制合成”方式呈现（" + game.presentMode + "）",
                     "每一帧都先交给桌面合成器再拷贝上屏，延迟和抖动高于独占全屏或翻转模型，也更容易被其他窗口的活动牵连。可尝试游戏内的独占全屏，或在 Windows 设置 › 系统 › 屏幕 › 显示卡 中开启“窗口化游戏优化”。");
             if (data.slow.Count >= 10)
             {
-                string own = Path.GetFileNameWithoutExtension(game.application);
-                var busy = data.slow.SelectMany(s => s.processes).Where(p => p.pid != game.pid && !p.name.Equals(own, StringComparison.OrdinalIgnoreCase) && !p.name.Equals("StutterScope", StringComparison.OrdinalIgnoreCase)
+                string own = appName ?? "";
+                var busy = data.slow.SelectMany(s => s.processes).Where(p => p.pid != pid && !p.name.Equals(own, StringComparison.OrdinalIgnoreCase) && !p.name.Equals("StutterScope", StringComparison.OrdinalIgnoreCase)
                         && !p.name.StartsWith("PresentMon", StringComparison.OrdinalIgnoreCase) && !p.name.Equals("wpr", StringComparison.OrdinalIgnoreCase))
                     .GroupBy(p => p.name).Select(g => new { name = g.Key, cpu = g.Sum(p => p.cpu) / data.slow.Count * Environment.ProcessorCount / 100 })
                     .Where(p => p.cpu >= .05).OrderByDescending(p => p.cpu).Take(6).ToList();

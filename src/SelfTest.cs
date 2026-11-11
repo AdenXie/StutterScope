@@ -71,6 +71,15 @@ namespace StutterScope
                 var parsed = Report.Analyze(officialFolder);
                 Assert(parsed.streams.Count > 0 && parsed.streams.Sum(s => s.frames) > 30, "Actual upstream PresentMon gold CSV accepted");
             }
+            string blind = Path.Combine(folder, "no-frames"); Directory.CreateDirectory(blind);
+            var blindMeta = new Dictionary<string, object>(meta) { { "frameStatus", "逐帧记录已退出，代码 6；系统记录仍在继续" } };
+            Json.Save(Path.Combine(blind, "session.json"), blindMeta);
+            using (var output = Json.Writer(Path.Combine(blind, "system.jsonl")))
+                for (int i = 0; i < 40; i++) output.WriteLine(Json.Encode(new Sample { t = i * .25, intervalMs = 250, cpu = 40, coreMax = 70, commitPct = 96, availableMB = 2000, pagesIn = 10,
+                    diskReadMs = i % 4 == 0 ? 120 : 0.2, diskWorst = "0 C:", foregroundPid = 77, foreground = "game" }));
+            var blindData = Report.Analyze(blind);
+            Assert(blindData.findings.Any(f => f.title.Contains("没有逐帧数据") && f.detail.Contains("先启动记录器")) && blindData.findings.Any(f => f.title.Contains("磁盘响应反复变慢"))
+                && blindData.findings.Any(f => f.title.Contains("内存紧张")), "Sessions without frames still report system findings and the ETW-denied hint");
             Console.WriteLine("Synthetic fixture (not a diagnosis): " + report);
             return 0;
         }
