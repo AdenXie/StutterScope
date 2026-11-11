@@ -1,4 +1,4 @@
-﻿param([ValidatePattern('^\d+\.\d+\.\d+$')][string]$Version = '1.1.0')
+param([ValidatePattern('^\d+\.\d+\.\d+$')][string]$Version = '1.2.0')
 $ErrorActionPreference = 'Stop'
 & (Join-Path $PSScriptRoot 'tools\fetch-presentmon.ps1')
 if ($LASTEXITCODE -ne 0) { throw 'PresentMon verification failed' }
@@ -7,7 +7,7 @@ $bundle = Join-Path $dist ('work-' + [Guid]::NewGuid().ToString('N') + '\Stutter
 New-Item -ItemType Directory -Path (Join-Path $bundle 'tools') -Force | Out-Null
 & (Join-Path $PSScriptRoot 'build.ps1') -OutputPath (Join-Path $bundle 'StutterScope.exe')
 # Allowlist only: never copy recordings, test output, Git metadata or local settings.
-foreach ($file in @('README.md','LICENSE','THIRD_PARTY_NOTICES.md','report-template.html','DeepTrace.wprp','Start-Monitor.ps1','开始记录.cmd','开始深度诊断.cmd','查看最新报告.cmd')) {
+foreach ($file in @('README.md','LICENSE','THIRD_PARTY_NOTICES.md','report-template.html','DeepTrace.wprp','Start-Monitor.ps1','开始记录.cmd','查看最新报告.cmd')) {
     Copy-Item -LiteralPath (Join-Path $PSScriptRoot $file) -Destination (Join-Path $bundle $file)
 }
 foreach ($file in @('PresentMon-2.6.0-x64.exe','PresentMon-LICENSE.txt')) {

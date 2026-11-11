@@ -50,6 +50,10 @@ namespace StutterScope
             Assert(data.streams.Count == 2, "Swap chains stay separate");
             var main = data.streams.Single(s => s.swapChain == "0xAAA");
             Assert(main.frames == 121 && main.candidates == 1 && main.maxMs == 80, "Known 80ms hitch detected exactly once");
+            Assert(Report.Stutters(main).Count == 1 && !main.incidents[0].selfInduced && main.presentMode == "Composed: Flip", "Hitch counts as one foreground stutter; present mode kept");
+            Assert(data.findings.Any(f => f.level == "warn" && f.title.Contains("明显卡顿 1 次")), "Session findings summarise the stutter");
+            var exporting = new TraceState { exportWindows = new List<double[]> { new[] { 10.0, 40.0 } }, startWindows = new List<double[]> { new[] { 69.6, 70.2 } } };
+            Assert(Report.Disturbed(exporting, 12, 12.05) && Report.Disturbed(exporting, 69.9, 70.15) && !Report.Disturbed(exporting, 50, 50.2), "Frames inside the recorder's own WPR start/export are flagged");
             Assert(Math.Abs(main.incidents[0].t - 1.07996) < .00001 && main.incidents[0].foreground, "QPC aligns to foreground telemetry");
             Assert(main.incidents[0].gpuMs == 4, "Pinned v1 GPU-active column parsed");
             Assert(main.p99Ms == 8.4, "P99 upper histogram bin");
@@ -127,9 +131,17 @@ namespace StutterScope
             var closeFake = new FakeWpr();
             var closing = new DeepTrace(closeFolder, Stopwatch.GetTimestamp(), delegate { }, closeFake, true);
             closing.Start(); Assert(Until(() => closing.Armed, 3000), "Close test starts an active trace");
-            closing.RequestStop(); Assert(closing.Wait(5000), "Closing active trace completes save and exits");
+            closing.RequestStop(); Assert(closing.Wait(5000), "Closing an idle trace exits");
             var closed = Json.Decode<TraceState>(File.ReadAllText(Path.Combine(closeFolder, "deep", "deep-trace.json")));
-            Assert(closed.artifacts.Count == 1 && closed.artifacts[0].reason == "关闭记录窗口" && !closed.active, "Window-close path preserves the current circular buffer");
+            Assert(closed.artifacts.Count == 0 && !closed.active && closed.startWindows.Count == 1 && closeFake.calls.Any(c => c.StartsWith("-cancel -instancename ")) && !closeFake.calls.Any(c => c.StartsWith("-stop")),
+                "Closing without a pending long frame discards the ring buffer instead of saving an ETL");
+            string pendingFolder = Path.Combine(folder, "closed-pending"); Directory.CreateDirectory(pendingFolder);
+            var pendingFake = new FakeWpr();
+            var pendingTrace = new DeepTrace(pendingFolder, Stopwatch.GetTimestamp(), delegate { }, pendingFake, true);
+            pendingTrace.Start(); Assert(Until(() => pendingTrace.Armed, 3000), "Pending-close test starts an active trace");
+            pendingTrace.Trigger(new TraceTrigger { frameMs = 90, source = "frame" }); pendingTrace.RequestStop(); Assert(pendingTrace.Wait(5000), "Closing with a pending long frame exits");
+            var pendingState = Json.Decode<TraceState>(File.ReadAllText(Path.Combine(pendingFolder, "deep", "deep-trace.json")));
+            Assert(pendingState.artifacts.Count == 1 && pendingState.artifacts[0].trigger != null, "A long frame seen just before closing is still saved");
         }
         public static int RunAdmin()
         {

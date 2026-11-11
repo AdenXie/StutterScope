@@ -32,6 +32,7 @@ namespace StutterScope
                 if (args.Contains("--self-test")) return SelfTest.Run();
                 if (args.Contains("--admin-self-test")) return SelfTest.RunAdmin();
                 if (args.Contains("--report")) { Console.WriteLine(Report.Build(Option(args, "--report", ""))); return 0; }
+                if (args.Contains("--etl")) return Etl(args);
                 if (args.Contains("--latest")) { OpenLatest(Option(args, "--root", Root)); return 0; }
                 if (args.Contains("--worker")) return RunWorker(args);
                 if (args.Contains("--capture")) return Capture(args);
@@ -44,7 +45,8 @@ namespace StutterScope
                 {
                     bool entered; try { entered = mutex.WaitOne(0); } catch (AbandonedMutexException) { entered = true; }
                     if (!entered) { Console.WriteLine("已有一个记录窗口正在运行。请关闭原窗口后再启动。"); Thread.Sleep(3000); return 1; }
-                    try { return Controller(Option(args, "--root", Root), args.Contains("--deep")); } finally { mutex.ReleaseMutex(); }
+                    // One mode: frames + system telemetry always, event-level tracing whenever this machine allows it. --light opts out.
+                    try { return Controller(Option(args, "--root", Root), !args.Contains("--light")); } finally { mutex.ReleaseMutex(); }
                 }
             }
             catch (Exception ex)
@@ -55,14 +57,17 @@ namespace StutterScope
         }
         static int Controller(string root, bool deep)
         {
-            Console.Title = (deep ? "游戏卡顿深度诊断" : "游戏卡顿监控") + " — 关闭此窗口停止记录";
+            string unavailable = deep ? DeepTrace.Unavailable() : "已用 --light 关闭";
+            deep = unavailable == null;
+            Console.Title = "游戏卡顿监控 — 关闭此窗口停止记录";
             var session = new Session(root, ""); // Reserves a unique directory; collection happens only in the detached worker.
             controllerFolder = session.Folder;
             closeHandler = delegate(uint kind) { if (kind == 0 || kind == 1 || kind == 2 || kind == 5 || kind == 6) RequestStop(); return false; };
             SetConsoleCtrlHandler(closeHandler, true);
             Console.CancelKeyPress += delegate(object sender, ConsoleCancelEventArgs e) { e.Cancel = true; RequestStop(); };
             Console.WriteLine("游戏卡顿监控  /  StutterScope");
-            if (deep) Console.WriteLine("深度诊断：256 MB循环缓冲；前台明显长帧自动保存ETL，最多3份。整理期间可能有额外开销。");
+            if (deep) Console.WriteLine("事件级跟踪已开启：前台出现明显长帧时自动保存并解码ETL（最多3份，每份约250 MB，保存期间约半分钟有额外开销）。");
+            else Console.WriteLine("事件级跟踪未开启（" + unavailable + "）：本轮只记录逐帧和系统数据。");
             Console.WriteLine("现在可以启动游戏。关闭此窗口停止记录，也可按 Enter 停止并等待报告。");
             Console.WriteLine("报告保存到：" + session.Folder);
             Console.WriteLine("停止后后台会整理报告；深度跟踪可能需数十秒。使用“查看最新报告.cmd”打开报告。");
@@ -152,6 +157,17 @@ namespace StutterScope
             string report = session.StopAndReport();
             Json.Save(Path.Combine(Path.GetDirectoryName(session.Folder), "latest.json"), new { report = report });
             Console.WriteLine(report); return 0;
+        }
+        // Decode one saved ETL around a chosen moment: --etl <file> --session <folder> --at <seconds> --ms <frame ms> --pid <game pid>
+        static int Etl(string[] args)
+        {
+            var meta = Json.Decode<System.Collections.Generic.Dictionary<string, object>>(File.ReadAllText(Path.Combine(Option(args, "--session", ""), "session.json")));
+            var window = new StallWindow { t = Double.Parse(Option(args, "--at", "0"), CultureInfo.InvariantCulture), frameMs = Double.Parse(Option(args, "--ms", "100"), CultureInfo.InvariantCulture),
+                pid = Int32.Parse(Option(args, "--pid", "0"), CultureInfo.InvariantCulture), source = "manual" };
+            var summary = EtlAnalyzer.Analyze(Path.GetFullPath(Option(args, "--etl", "")), Convert.ToInt64(meta["qpcOrigin"], CultureInfo.InvariantCulture),
+                Convert.ToDouble(meta["qpcFrequency"], CultureInfo.InvariantCulture), new[] { window });
+            Console.WriteLine(Json.Encode(summary));
+            return summary.error == null ? 0 : 1;
         }
         static void OpenLatest(string root)
         {

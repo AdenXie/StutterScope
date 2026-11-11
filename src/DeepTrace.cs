@@ -32,6 +32,8 @@ namespace StutterScope
         public double automaticThresholdMs = 50;
         public List<TraceArtifact> artifacts = new List<TraceArtifact>();
         public List<double[]> exportWindows = new List<double[]>();
+        // Starting WPR freezes presentation for a few hundred ms; frames inside these intervals are the recorder's own doing.
+        public List<double[]> startWindows = new List<double[]>();
     }
 
     // Does not equate a 250ms CPU sample with a driver's single execution time.
@@ -130,6 +132,15 @@ namespace StutterScope
         public const int MaxArtifacts = 3;
         public string Status { get { lock (sync) return state.status; } }
         public bool Armed { get { return armed; } }
+        // Null when event-level tracing can run; otherwise the reason the session records frames and system telemetry only.
+        public static string Unavailable()
+        {
+            if (!Session.IsAdmin) return "没有管理员权限";
+            if (!File.Exists(Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.System), "wpr.exe"))) return "系统中没有 wpr.exe";
+            if (!File.Exists(Path.Combine(Program.Home, "DeepTrace.wprp"))) return "缺少 DeepTrace.wprp";
+            try { if (new DriveInfo(Path.GetPathRoot(Program.Home)).AvailableFreeSpace < 3L * 1024 * 1024 * 1024) return "磁盘可用空间不足3 GiB"; } catch (Exception) { }
+            return null;
+        }
         public string InstanceName { get { return state.instanceName; } }
 
         public DeepTrace(string folder, long origin, Action<string> warn, ITraceCommands commands = null, bool? allow = null)
@@ -191,10 +202,11 @@ namespace StutterScope
                     StatusTo("正在启动256 MB循环跟踪", false);
                     string profile = Path.Combine(Program.Home, "DeepTrace.wprp");
                     ownSessionMayExist = true;
+                    double startRequested = Now;
                     var started = commands.Run("-start " + Quote(profile + "!StutterScope") + Instance, 45000);
                     if (started.code != 0) throw new InvalidOperationException("WPR启动失败：" + started.code + " " + started.output.Trim());
                     armedAt = Now;
-                    lock (sync) { pending = null; armed = true; }
+                    lock (sync) { pending = null; armed = true; state.startWindows.Add(new[] { startRequested, armedAt }); }
                     StatusTo("深度循环跟踪中，已保存" + state.artifacts.Count + "/3", true);
                     double firstObserved = -1;
                     while (!closing.WaitOne(100))
@@ -205,7 +217,10 @@ namespace StutterScope
                     }
                     TraceTrigger trigger;
                     lock (sync) { armed = false; trigger = pending; pending = null; }
-                    Save(trigger, trigger != null && trigger.source == "self-test" ? "保存流程自测（非真实卡顿）" : closing.WaitOne(0) ? "关闭记录窗口" : "前台长帧自动触发");
+                    // Closing with no long frame pending: nothing to explain, so the ring buffer is discarded (see finally) instead of
+                    // spending ~25 s and 250 MB on a trace of ordinary gameplay.
+                    if (trigger == null) break;
+                    Save(trigger, trigger.source == "self-test" ? "保存流程自测（非真实卡顿）" : "前台长帧自动触发");
                     if (closing.WaitOne(0)) break;
                     StatusTo("跟踪已保存，10秒冷却后恢复；基础记录继续", false);
                     if (closing.WaitOne(10000)) break;

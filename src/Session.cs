@@ -44,6 +44,7 @@ namespace StutterScope
         readonly ConcurrentQueue<double[]> probeGaps = new ConcurrentQueue<double[]>();
         long maxProbeUs;
         Thread fastThread, slowThread, probeThread, frameThread, stderrThread;
+        int frameAttempts;
         Process presentmon;
         string helper { get { return Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "tools", "PresentMon-2.6.0-x64.exe"); } }
         public static bool IsAdmin { get { return new WindowsPrincipal(WindowsIdentity.GetCurrent()).IsInRole(WindowsBuiltInRole.Administrator); } }
@@ -56,7 +57,7 @@ namespace StutterScope
         }
         public void Start(bool frames, bool deep = false)
         {
-            Meta["version"] = "1.1.0";
+            Meta["version"] = "1.2.0";
             Meta["deepRequested"] = deep;
             Meta["startUtc"] = StartedUtc.ToString("o"); Meta["localStart"] = StartedUtc.ToLocalTime().ToString("yyyy-MM-dd HH:mm:ss zzz");
             Meta["qpcOrigin"] = Origin; Meta["qpcFrequency"] = Stopwatch.Frequency;
@@ -69,6 +70,8 @@ namespace StutterScope
             probeThread = Worker("Scheduling probe", Probe);
             fastThread = Worker("System telemetry", FastLoop);
             slowThread = Worker("GPU and processes", SlowLoop);
+            string unavailable = deep ? DeepTrace.Unavailable() : null;
+            if (unavailable != null) { deep = false; Meta["deepSkipped"] = unavailable; Warn("事件级跟踪未启用（" + unavailable + "）；逐帧和系统记录照常进行。"); Json.Save(Path.Combine(Folder, "session.json"), Meta); }
             if (deep) { Deep = new DeepTrace(Folder, Origin, Warn); Deep.Start(); }
             if (frames) StartFrames(); else FrameStatus = "仅系统采集；未启用逐帧记录";
         }
@@ -165,12 +168,12 @@ namespace StutterScope
             var info = new ProcessStartInfo(helper, arguments) { UseShellExecute = false, CreateNoWindow = true, RedirectStandardOutput = true, RedirectStandardError = true };
             try
             {
-                presentmon = Process.Start(info); FrameStatus = "正在等待游戏帧（游戏运行后应出现帧数）";
+                var process = presentmon = Process.Start(info); FrameStatus = "正在等待游戏帧（游戏运行后应出现帧数）";
                 stderrThread = Worker("PresentMon messages", delegate {
-                    using (var output = Json.Writer(Path.Combine(Folder, "presentmon.log")))
+                    using (var output = new StreamWriter(new FileStream(Path.Combine(Folder, "presentmon.log"), FileMode.Append, FileAccess.Write, FileShare.ReadWrite), new UTF8Encoding(false)))
                     {
                         string line; int chars = 0;
-                        while ((line = presentmon.StandardError.ReadLine()) != null)
+                        while ((line = process.StandardError.ReadLine()) != null)
                         {
                             if (chars < 65536) { output.WriteLine(line); output.Flush(); chars += line.Length; }
                         }
@@ -180,7 +183,7 @@ namespace StutterScope
                     using (var output = Json.Writer(Path.Combine(Folder, "frames.csv")))
                     {
                         string line; bool header = false; double flushAt = 0;
-                        while ((line = presentmon.StandardOutput.ReadLine()) != null)
+                        while ((line = process.StandardOutput.ReadLine()) != null)
                         {
                             if (!header)
                             {
@@ -197,10 +200,18 @@ namespace StutterScope
                             if (now - flushAt >= 1) { output.Flush(); flushAt = now; }
                         }
                     }
-                    presentmon.WaitForExit();
+                    process.WaitForExit();
+                    if (!stopped.WaitOne(0) && Interlocked.Read(ref FrameRows) == 0 && frameAttempts < 3)
+                    {
+                        // A failed ETW session start (seen as "access denied" even when elevated) is often transient: retry before giving up on frames.
+                        frameAttempts++; FrameStatus = "逐帧记录启动失败（代码 " + process.ExitCode + "），第 " + frameAttempts + " 次重试";
+                        Warn(FrameStatus); process.Dispose();
+                        if (!stopped.WaitOne(3000)) StartFrames();
+                        return;
+                    }
                     if (!stopped.WaitOne(0))
                     {
-                        FrameStatus = "逐帧记录已退出，代码 " + presentmon.ExitCode + "；系统记录仍在继续";
+                        FrameStatus = "逐帧记录已退出，代码 " + process.ExitCode + "；系统记录仍在继续";
                         Warn(FrameStatus + "。详见 presentmon.log；若 access denied，请使用管理员模式。");
                     }
                 });
